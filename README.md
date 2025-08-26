@@ -108,7 +108,7 @@ CHAT_ID = "your_telegram_chat_id"
    - Message [@userinfobot](https://t.me/userinfobot)
    - It will reply with your Chat ID
 
-## 🏃‍♂️ Usage
+##  Usage
 
 ### Windows
 ```cmd
