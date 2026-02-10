@@ -24,7 +24,9 @@ jobs:
       - name: Restore state
         uses: actions/cache@v4
         with:
-          path: github-actions-attendance/attendance_state.json
+          path: |
+            github-actions-attendance/attendance_state.json
+            github-actions-attendance/token.json
           key: attendance-state-${{ github.run_id }}
           restore-keys: attendance-state-
 

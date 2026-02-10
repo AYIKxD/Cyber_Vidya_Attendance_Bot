@@ -10,14 +10,95 @@ import config
 config.validate()
 
 INDIA_TZ = pytz.timezone(config.TIMEZONE)
+TOKEN_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "token.json")
 
 
 def get_india_time():
     return datetime.now(INDIA_TZ)
 
 
-def fetch_courses():
-    headers = {"Authorization": config.CV_AUTH_PREF + config.CV_AUTH_TOKEN}
+# ── Token management ──
+
+def load_token():
+    """Load token: check Telegram for updates first, then cached file, then env."""
+    # Check if user sent a new token via Telegram
+    tg_token, tg_pref = check_telegram_for_token()
+    if tg_token:
+        save_token(tg_token, tg_pref)
+        print("Token updated from Telegram!")
+        return tg_token, tg_pref
+
+    # Try cached file
+    if os.path.exists(TOKEN_FILE):
+        with open(TOKEN_FILE, "r") as f:
+            data = json.load(f)
+        if data.get("token"):
+            print("Using cached token.")
+            return data["token"], data.get("auth_pref", "")
+
+    # Fall back to env/secret
+    if config.CV_AUTH_TOKEN:
+        print("Using token from secret.")
+        return config.CV_AUTH_TOKEN, config.CV_AUTH_PREF
+
+    print("ERROR: No token available.")
+    send_telegram("🔑 No token found. Send your token:\n\n`/token YOUR_TOKEN`\n`/authpref YOUR_PREFIX`")
+    sys.exit(1)
+
+
+def save_token(token, auth_pref=""):
+    with open(TOKEN_FILE, "w") as f:
+        json.dump({"token": token, "auth_pref": auth_pref}, f)
+
+
+def check_telegram_for_token():
+    """Check recent Telegram messages for /token and /authpref commands."""
+    if not config.TELEGRAM_BOT_TOKEN or not config.TELEGRAM_CHAT_ID:
+        return None, None
+
+    try:
+        url = f"https://api.telegram.org/bot{config.TELEGRAM_BOT_TOKEN}/getUpdates"
+        resp = requests.get(url, params={"limit": 20, "timeout": 0}, timeout=10)
+        data = resp.json()
+
+        if not data.get("ok"):
+            return None, None
+
+        token = None
+        auth_pref = ""
+
+        for update in data.get("result", []):
+            msg = update.get("message", {})
+            chat_id = str(msg.get("chat", {}).get("id", ""))
+            text = (msg.get("text") or "").strip()
+
+            # Only accept commands from the configured chat
+            if chat_id != config.TELEGRAM_CHAT_ID:
+                continue
+
+            if text.startswith("/token "):
+                token = text[7:].strip()
+            elif text.startswith("/authpref "):
+                auth_pref = text[10:].strip()
+
+        if token:
+            # Clear processed updates
+            if data.get("result"):
+                last_id = data["result"][-1]["update_id"]
+                requests.get(url, params={"offset": last_id + 1, "timeout": 0}, timeout=10)
+            print(f"Found /token command in Telegram (token: {token[:15]}...)")
+            return token, auth_pref
+
+    except Exception as e:
+        print(f"Telegram check failed (non-fatal): {e}")
+
+    return None, None
+
+
+# ── Core functions ──
+
+def fetch_courses(token, auth_pref):
+    headers = {"Authorization": auth_pref + token}
     resp = requests.get(config.COURSES_URL, headers=headers, timeout=config.REQUEST_TIMEOUT)
     resp.raise_for_status()
     return resp.json()["data"]
@@ -57,7 +138,11 @@ def check_attendance():
     india_time = get_india_time()
     print(f"Checking attendance at {india_time.strftime('%Y-%m-%d %H:%M:%S IST')}...")
 
-    courses = fetch_courses()
+    token, auth_pref = load_token()
+    courses = fetch_courses(token, auth_pref)
+
+    # Token worked — cache it
+    save_token(token, auth_pref)
 
     if os.path.exists(config.STATE_FILE):
         with open(config.STATE_FILE, "r") as f:
@@ -104,27 +189,27 @@ if __name__ == "__main__":
         check_attendance()
     except requests.exceptions.HTTPError as e:
         status = e.response.status_code if e.response is not None else 0
-        if status == 401:
-            print("ERROR: Token expired! Update CV_AUTH_TOKEN in GitHub Secrets.")
         print(f"Error: {e}")
-        error_msg = (
-            "🚨 *SYSTEM ERROR*\n\n"
-            f"🕐 `{get_india_time().strftime('%d %b %Y, %I:%M %p IST')}`\n\n"
-            f"```\n{str(e)}\n```\n\n"
-        )
+
         if status == 401:
-            error_msg += "🔑 _Token expired — update_ `CV_AUTH_TOKEN` _in GitHub Secrets_"
+            # Delete cached token so next run picks up new one
+            if os.path.exists(TOKEN_FILE):
+                os.remove(TOKEN_FILE)
+
+            send_telegram(
+                "🔑 *Token expired*\n\n"
+                "Send a new token:\n"
+                "`/token YOUR_TOKEN`\n"
+                "`/authpref YOUR_PREFIX`"
+            )
         else:
-            error_msg += "🔄 _System will retry on next scheduled run_"
-        try:
-            send_telegram(error_msg)
-        except Exception:
-            pass
+            send_telegram(f"🚨 *Error {status}*\n\n```\n{e}\n```")
+
         sys.exit(1)
     except Exception as e:
         print(f"Error: {e}")
         try:
-            send_telegram(f"🚨 *ERROR*\n\n```\n{e}\n```")
+            send_telegram(f"🚨 *Error*\n\n```\n{e}\n```")
         except Exception:
             pass
         sys.exit(1)

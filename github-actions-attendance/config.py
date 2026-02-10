@@ -30,11 +30,7 @@ REQUEST_TIMEOUT = 30
 
 def validate():
     if not CV_AUTH_TOKEN:
-        print("ERROR: CV_AUTH_TOKEN not set.")
-        print("Go to GitHub repo → Settings → Secrets → Actions")
-        print("Add CV_AUTH_TOKEN (from browser localStorage 'authenticationtoken')")
-        print("Add CV_AUTH_PREF (from browser localStorage 'auth_prefix')")
-        sys.exit(1)
+        print("WARNING: CV_AUTH_TOKEN not set. Bot will check Telegram for /token command.")
 
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         print("WARNING: Telegram not configured. Notifications will only print to console.")
