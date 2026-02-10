@@ -12,7 +12,17 @@ def browser_login():
     auth_result = {"auth_pref": "", "token": ""}
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
+        browser = p.chromium.launch(
+            headless=True,
+            args=[
+                "--disable-blink-features=AutomationControlled",
+                "--no-sandbox",
+                "--disable-infobars",
+                "--disable-dev-shm-usage",
+                "--disable-extensions",
+                "--window-size=1920,1080",
+            ],
+        )
         context = browser.new_context(
             user_agent=(
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -22,20 +32,57 @@ def browser_login():
             viewport={"width": 1920, "height": 1080},
             locale="en-US",
         )
+
+        # ── Stealth: inject anti-detection scripts before any page loads ──
+        context.add_init_script("""
+            // Remove webdriver flag
+            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+
+            // Override plugins to look like a real browser
+            Object.defineProperty(navigator, 'plugins', {
+                get: () => [1, 2, 3, 4, 5],
+            });
+
+            // Override languages
+            Object.defineProperty(navigator, 'languages', {
+                get: () => ['en-US', 'en'],
+            });
+
+            // Override chrome object
+            window.chrome = {
+                runtime: {},
+                loadTimes: function() {},
+                csi: function() {},
+                app: {},
+            };
+
+            // Override permissions query
+            const originalQuery = window.navigator.permissions.query;
+            window.navigator.permissions.query = (parameters) =>
+                parameters.name === 'notifications'
+                    ? Promise.resolve({ state: Notification.permission })
+                    : originalQuery(parameters);
+
+            // Remove automation-related properties
+            delete navigator.__proto__.webdriver;
+        """)
+
         page = context.new_page()
 
         # ── Intercept the login API response to grab the token directly ──
         def handle_response(response):
             if "auth" in response.url and "login" in response.url:
                 try:
+                    body = response.json()
                     if response.status == 200:
-                        body = response.json()
                         if body.get("data", {}).get("token"):
                             auth_result["token"] = body["data"]["token"]
                             auth_result["auth_pref"] = body["data"].get("auth_pref", "")
                             print("Token captured from API response!")
-                except Exception:
-                    pass
+                    else:
+                        print(f"Login API responded {response.status}: {json.dumps(body)}")
+                except Exception as e:
+                    print(f"Login API responded {response.status} (non-JSON): {e}")
 
         page.on("response", handle_response)
 
@@ -207,9 +254,16 @@ def browser_login():
 
         time.sleep(1)
 
-        # ── Wait for reCAPTCHA v3 (runs in background) ──
-        print("Waiting for reCAPTCHA...")
-        time.sleep(3)
+        # ── Wait for reCAPTCHA v3 to load ──
+        print("Waiting for reCAPTCHA to initialize...")
+        try:
+            # reCAPTCHA v3 loads via an iframe from google.com/recaptcha
+            page.wait_for_selector('iframe[src*="recaptcha"]', state="attached", timeout=10000)
+            print("  reCAPTCHA iframe detected, waiting for it to settle...")
+            time.sleep(3)
+        except PwTimeout:
+            print("  No reCAPTCHA iframe found (may not be on this page), proceeding...")
+            time.sleep(2)
 
         # ── Click login button ──
         print("Clicking login...")
@@ -251,9 +305,21 @@ def browser_login():
                 return false;
             }""")
 
-        # ── Wait for login response ──
+        # ── Wait for login API response or navigation ──
         print("Waiting for login response...")
-        time.sleep(8)
+        # Poll for token or URL change (max 15 seconds)
+        for attempt in range(15):
+            time.sleep(1)
+            if auth_result["token"]:
+                print(f"  Token received after {attempt + 1}s!")
+                break
+            current_url = page.url
+            if "/login" not in current_url:
+                print(f"  Navigated away from login to: {current_url}")
+                time.sleep(2)  # let localStorage populate
+                break
+        else:
+            print("  No token or navigation after 15s.")
 
         # ── Extract token ──
         if not auth_result["token"]:
