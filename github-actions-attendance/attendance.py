@@ -6,31 +6,30 @@ import sys
 from datetime import datetime
 import pytz
 import config
+from browser_login import browser_login
 
 config.validate()
 
 INDIA_TZ = pytz.timezone(config.TIMEZONE)
+TOKEN_FILE = config.STATE_FILE.replace("attendance_state.json", "token.json")
 
 
 def get_india_time():
     return datetime.now(INDIA_TZ)
 
 
-def login():
-    payload = {"userName": config.CV_USERNAME, "password": config.CV_PASSWORD}
-    resp = requests.post(config.LOGIN_URL, json=payload, timeout=config.REQUEST_TIMEOUT)
-    resp.raise_for_status()
-    data = resp.json()["data"]
-    return data["auth_pref"], data["token"]
+def load_cached_token():
+    if os.path.exists(TOKEN_FILE):
+        with open(TOKEN_FILE, "r") as f:
+            data = json.load(f)
+        if data.get("token"):
+            return data.get("auth_pref", ""), data["token"]
+    return None, None
 
 
-def get_auth():
-    if config.CV_AUTH_TOKEN:
-        print("Using provided auth token.")
-        return config.CV_AUTH_PREF, config.CV_AUTH_TOKEN
-
-    print("Logging in with username/password...")
-    return login()
+def save_token(auth_pref, token):
+    with open(TOKEN_FILE, "w") as f:
+        json.dump({"auth_pref": auth_pref, "token": token}, f)
 
 
 def fetch_courses(auth_pref, token):
@@ -38,6 +37,34 @@ def fetch_courses(auth_pref, token):
     resp = requests.get(config.COURSES_URL, headers=headers, timeout=config.REQUEST_TIMEOUT)
     resp.raise_for_status()
     return resp.json()["data"]
+
+
+def get_courses_with_auto_login():
+    """Try cached token first. If expired, browser login and retry."""
+    auth_pref, token = load_cached_token()
+
+    # Try cached token
+    if token:
+        try:
+            print("Trying cached token...")
+            courses = fetch_courses(auth_pref, token)
+            print("Cached token is valid.")
+            return courses
+        except requests.exceptions.HTTPError as e:
+            status = e.response.status_code if e.response is not None else 0
+            print(f"Cached token failed (HTTP {status}). Refreshing via browser...")
+        except Exception as e:
+            print(f"Cached token failed: {e}. Refreshing via browser...")
+    else:
+        print("No cached token found. Logging in via browser...")
+
+    # Browser login for fresh token
+    auth_pref, token = browser_login()
+    save_token(auth_pref, token)
+    print("New token saved.")
+
+    courses = fetch_courses(auth_pref, token)
+    return courses
 
 
 def send_telegram(msg):
@@ -89,8 +116,7 @@ def check_attendance():
     india_time = get_india_time()
     print(f"Checking attendance at {india_time.strftime('%Y-%m-%d %H:%M:%S IST')}...")
 
-    auth_pref, token = get_auth()
-    courses = fetch_courses(auth_pref, token)
+    courses = get_courses_with_auto_login()
 
     if os.path.exists(config.STATE_FILE):
         with open(config.STATE_FILE, "r") as f:
