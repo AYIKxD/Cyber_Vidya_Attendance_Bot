@@ -40,10 +40,26 @@ def fetch_courses(auth_pref, token):
 
 
 def get_courses_with_auto_login():
-    """Try cached token first. If expired, browser login and retry."""
+    """Try CV_AUTH_TOKEN secret first, then cached token, then browser login."""
+
+    # Priority 1: Direct token from GitHub Secret (most reliable — bypasses CAPTCHA)
+    if config.CV_AUTH_TOKEN:
+        try:
+            print("Trying CV_AUTH_TOKEN from secret...")
+            courses = fetch_courses(config.CV_AUTH_PREF, config.CV_AUTH_TOKEN)
+            print("CV_AUTH_TOKEN is valid!")
+            # Cache it for future use
+            save_token(config.CV_AUTH_PREF, config.CV_AUTH_TOKEN)
+            return courses
+        except requests.exceptions.HTTPError as e:
+            status = e.response.status_code if e.response is not None else 0
+            print(f"CV_AUTH_TOKEN failed (HTTP {status}). Token may have expired.")
+        except Exception as e:
+            print(f"CV_AUTH_TOKEN failed: {e}")
+
+    # Priority 2: Cached token from previous login
     auth_pref, token = load_cached_token()
 
-    # Try cached token
     if token:
         try:
             print("Trying cached token...")
@@ -58,7 +74,7 @@ def get_courses_with_auto_login():
     else:
         print("No cached token found. Logging in via browser...")
 
-    # Browser login for fresh token
+    # Priority 3: Browser login for fresh token
     auth_pref, token = browser_login()
     save_token(auth_pref, token)
     print("New token saved.")

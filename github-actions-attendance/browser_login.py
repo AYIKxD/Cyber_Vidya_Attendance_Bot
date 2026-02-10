@@ -1,6 +1,8 @@
 import sys
 import json
 import time
+import random
+import requests
 from playwright.sync_api import sync_playwright, TimeoutError as PwTimeout
 import config
 
@@ -279,11 +281,13 @@ def browser_login():
             browser.close()
             sys.exit(1)
 
+        # ── Simulate human behavior to boost reCAPTCHA v3 score ──
+        print("Simulating human behavior for reCAPTCHA...")
+        _simulate_human_behavior(page)
 
         # ── Wait for reCAPTCHA v3 to load ──
         print("Waiting for reCAPTCHA to initialize...")
         try:
-            # reCAPTCHA v3 loads via an iframe from google.com/recaptcha
             page.wait_for_selector('iframe[src*="recaptcha"]', state="attached", timeout=10000)
             print("  reCAPTCHA iframe detected, waiting for it to settle...")
             time.sleep(3)
@@ -347,26 +351,89 @@ def browser_login():
         else:
             print("  No token or navigation after 15s.")
 
-        # ── Extract token ──
-        if not auth_result["token"]:
-            # Check localStorage for token
-            token = page.evaluate("() => localStorage.getItem('authenticationtoken')")
-            if token:
-                auth_result["token"] = token.strip('"')
-                print("Token found in localStorage!")
+        # ── Extract token from localStorage ──
+        _try_extract_token(page, auth_result)
 
-            auth_pref = page.evaluate("() => localStorage.getItem('auth_pref')")
-            if auth_pref:
-                auth_result["auth_pref"] = auth_pref.strip('"')
-
-        # Still no token? Try other common storage keys
+        # ── RETRY: If button-click login failed, try direct API call ──
         if not auth_result["token"]:
-            for key in ["token", "jwt", "access_token", "auth_token"]:
-                val = page.evaluate(f"() => localStorage.getItem('{key}')")
-                if val:
-                    auth_result["token"] = val.strip('"')
-                    print(f"Token found in localStorage key '{key}'!")
-                    break
+            print("Button-click login failed. Trying direct API call with fresh reCAPTCHA token...")
+            _simulate_human_behavior(page)  # more human behavior before retry
+            try:
+                # Execute reCAPTCHA to get a fresh token
+                captcha_token = page.evaluate("""() => {
+                    return new Promise((resolve, reject) => {
+                        if (typeof grecaptcha === 'undefined') {
+                            reject('grecaptcha not found');
+                            return;
+                        }
+                        // Find the site key from the script tag or existing config
+                        const scripts = document.querySelectorAll('script[src*="recaptcha"]');
+                        let siteKey = '';
+                        for (const s of scripts) {
+                            const match = s.src.match(/render=([\w-]+)/);
+                            if (match) { siteKey = match[1]; break; }
+                        }
+                        if (!siteKey) {
+                            // Try to get it from grecaptcha enterprise or container
+                            const iframe = document.querySelector('iframe[src*="recaptcha"]');
+                            if (iframe) {
+                                const m = iframe.src.match(/k=([\w-]+)/);
+                                if (m) siteKey = m[1];
+                            }
+                        }
+                        if (!siteKey) { reject('No site key found'); return; }
+
+                        grecaptcha.ready(() => {
+                            grecaptcha.execute(siteKey, {action: 'login'})
+                                .then(token => resolve(token))
+                                .catch(err => reject(err));
+                        });
+                    });
+                }""")
+                print(f"  Got reCAPTCHA token: {captcha_token[:30]}...")
+
+                # Read the current form values
+                form_values = page.evaluate("""() => {
+                    const u = document.querySelector('input[name="username"]');
+                    const p = document.querySelector('input[name="password"]');
+                    return {
+                        username: u ? u.value : '',
+                        password: p ? p.value : '',
+                    };
+                }""")
+
+                # Make direct API call
+                api_payload = {
+                    "userName": form_values.get("username", config.CV_USERNAME),
+                    "password": form_values.get("password", config.CV_PASSWORD),
+                    "recaptchaToken": captcha_token,
+                }
+                print(f"  Calling {config.LOGIN_API} directly...")
+                resp = requests.post(
+                    config.LOGIN_API,
+                    json=api_payload,
+                    headers={
+                        "Content-Type": "application/json",
+                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                        "Origin": "https://kiet.cybervidya.net",
+                        "Referer": "https://kiet.cybervidya.net/login",
+                    },
+                    timeout=30
+                )
+                print(f"  API response: {resp.status_code}")
+                if resp.status_code == 200:
+                    body = resp.json()
+                    if body.get("data", {}).get("token"):
+                        auth_result["token"] = body["data"]["token"]
+                        auth_result["auth_pref"] = body["data"].get("auth_pref", "")
+                        print("  Token captured from direct API call!")
+                else:
+                    print(f"  Direct API call failed: {resp.text}")
+            except Exception as e:
+                print(f"  Direct API call attempt failed: {e}")
+
+        # ── Final localStorage check ──
+        _try_extract_token(page, auth_result)
 
         # Dump debug info if login failed
         if not auth_result["token"]:
@@ -376,10 +443,79 @@ def browser_login():
 
         if not auth_result["token"]:
             print("ERROR: Could not extract token after login.")
-            print("Login may have failed — check credentials or CAPTCHA blocking.")
+            print("Login may have failed — reCAPTCHA is scoring the bot too low.")
+            print("TIP: Set CV_AUTH_TOKEN as a GitHub secret (from browser localStorage 'authenticationtoken').")
             sys.exit(1)
 
         return auth_result["auth_pref"], auth_result["token"]
+
+
+def _simulate_human_behavior(page):
+    """Simulate human-like behavior to improve reCAPTCHA v3 score."""
+    try:
+        vw = 1920
+        vh = 1080
+
+        # Random mouse movements across the page
+        for _ in range(random.randint(3, 6)):
+            x = random.randint(100, vw - 100)
+            y = random.randint(100, vh - 100)
+            page.mouse.move(x, y, steps=random.randint(5, 15))
+            time.sleep(random.uniform(0.1, 0.3))
+
+        # Scroll down and up
+        page.mouse.wheel(0, random.randint(100, 300))
+        time.sleep(random.uniform(0.3, 0.7))
+        page.mouse.wheel(0, -random.randint(50, 150))
+        time.sleep(random.uniform(0.2, 0.5))
+
+        # Click on a non-interactive area (body)
+        page.mouse.click(random.randint(500, 800), random.randint(200, 400))
+        time.sleep(random.uniform(0.2, 0.4))
+
+        # Move mouse to login button area and hover
+        btn = page.locator('button[type="submit"]:visible')
+        if btn.count() > 0:
+            box = btn.first.bounding_box()
+            if box:
+                page.mouse.move(
+                    box["x"] + box["width"] / 2,
+                    box["y"] + box["height"] / 2,
+                    steps=random.randint(8, 20)
+                )
+                time.sleep(random.uniform(0.3, 0.6))
+
+        # Brief pause to let reCAPTCHA observe
+        time.sleep(random.uniform(1.0, 2.0))
+        print("  Human behavior simulation complete.")
+    except Exception as e:
+        print(f"  Human behavior simulation error (non-fatal): {e}")
+
+
+def _try_extract_token(page, auth_result):
+    """Try to extract auth token from page localStorage."""
+    if auth_result["token"]:
+        return
+    try:
+        token = page.evaluate("() => localStorage.getItem('authenticationtoken')")
+        if token:
+            auth_result["token"] = token.strip('"')
+            print("Token found in localStorage!")
+
+        auth_pref = page.evaluate("() => localStorage.getItem('auth_pref')")
+        if auth_pref:
+            auth_result["auth_pref"] = auth_pref.strip('"')
+
+        # Try other common storage keys
+        if not auth_result["token"]:
+            for key in ["token", "jwt", "access_token", "auth_token"]:
+                val = page.evaluate(f"() => localStorage.getItem('{key}')")
+                if val:
+                    auth_result["token"] = val.strip('"')
+                    print(f"Token found in localStorage key '{key}'!")
+                    break
+    except Exception:
+        pass
 
 
 def _dismiss_modals(page):
