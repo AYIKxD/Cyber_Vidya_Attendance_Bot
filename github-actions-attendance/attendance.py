@@ -6,86 +6,26 @@ import sys
 from datetime import datetime
 import pytz
 import config
-from browser_login import browser_login
 
 config.validate()
 
 INDIA_TZ = pytz.timezone(config.TIMEZONE)
-TOKEN_FILE = config.STATE_FILE.replace("attendance_state.json", "token.json")
 
 
 def get_india_time():
     return datetime.now(INDIA_TZ)
 
 
-def load_cached_token():
-    if os.path.exists(TOKEN_FILE):
-        with open(TOKEN_FILE, "r") as f:
-            data = json.load(f)
-        if data.get("token"):
-            return data.get("auth_pref", ""), data["token"]
-    return None, None
-
-
-def save_token(auth_pref, token):
-    with open(TOKEN_FILE, "w") as f:
-        json.dump({"auth_pref": auth_pref, "token": token}, f)
-
-
-def fetch_courses(auth_pref, token):
-    headers = {"Authorization": auth_pref + token}
+def fetch_courses():
+    headers = {"Authorization": config.CV_AUTH_PREF + config.CV_AUTH_TOKEN}
     resp = requests.get(config.COURSES_URL, headers=headers, timeout=config.REQUEST_TIMEOUT)
     resp.raise_for_status()
     return resp.json()["data"]
 
 
-def get_courses_with_auto_login():
-    """Try CV_AUTH_TOKEN secret first, then cached token, then browser login."""
-
-    # Priority 1: Direct token from GitHub Secret (most reliable — bypasses CAPTCHA)
-    if config.CV_AUTH_TOKEN:
-        try:
-            print("Trying CV_AUTH_TOKEN from secret...")
-            courses = fetch_courses(config.CV_AUTH_PREF, config.CV_AUTH_TOKEN)
-            print("CV_AUTH_TOKEN is valid!")
-            # Cache it for future use
-            save_token(config.CV_AUTH_PREF, config.CV_AUTH_TOKEN)
-            return courses
-        except requests.exceptions.HTTPError as e:
-            status = e.response.status_code if e.response is not None else 0
-            print(f"CV_AUTH_TOKEN failed (HTTP {status}). Token may have expired.")
-        except Exception as e:
-            print(f"CV_AUTH_TOKEN failed: {e}")
-
-    # Priority 2: Cached token from previous login
-    auth_pref, token = load_cached_token()
-
-    if token:
-        try:
-            print("Trying cached token...")
-            courses = fetch_courses(auth_pref, token)
-            print("Cached token is valid.")
-            return courses
-        except requests.exceptions.HTTPError as e:
-            status = e.response.status_code if e.response is not None else 0
-            print(f"Cached token failed (HTTP {status}). Refreshing via browser...")
-        except Exception as e:
-            print(f"Cached token failed: {e}. Refreshing via browser...")
-    else:
-        print("No cached token found. Logging in via browser...")
-
-    # Priority 3: Browser login for fresh token
-    auth_pref, token = browser_login()
-    save_token(auth_pref, token)
-    print("New token saved.")
-
-    courses = fetch_courses(auth_pref, token)
-    return courses
-
-
 def send_telegram(msg):
     if not config.TELEGRAM_BOT_TOKEN or not config.TELEGRAM_CHAT_ID:
-        print("Telegram not configured, skipping notification.")
+        print("Telegram not configured, skipping.")
         print("Message:", msg)
         return
     url = config.TELEGRAM_API.format(token=config.TELEGRAM_BOT_TOKEN)
@@ -96,7 +36,6 @@ def send_telegram(msg):
 
 def calculate_attendance_message(course, present, total, status):
     percentage = (present / total * 100) if total > 0 else 0
-
     status_text = "**PRESENT**" if status == "Present" else "**ABSENT**"
 
     msg = f"*{course}*\n"
@@ -109,17 +48,13 @@ def calculate_attendance_message(course, present, total, status):
     pct = config.MIN_ATTENDANCE_PCT / 100
 
     if percentage < config.MIN_ATTENDANCE_PCT:
-        x = math.ceil((pct * total - present) / (1 - pct))
-        if x < 0:
-            x = 0
+        x = max(0, math.ceil((pct * total - present) / (1 - pct)))
         msg += "__CRITICAL ALERT__\n"
         msg += "Below minimum requirement\n"
         msg += f"*Action Required:* Attend next `{x}` lecture(s)\n"
         msg += "Missing classes could affect eligibility"
     else:
-        y = math.floor(present / pct - total)
-        if y < 0:
-            y = 0
+        y = max(0, math.floor(present / pct - total))
         msg += "__ATTENDANCE SECURE__\n"
         msg += f"Above {config.MIN_ATTENDANCE_PCT}% requirement\n"
         msg += f"*Flexibility:* Can skip up to `{y}` lecture(s)\n"
@@ -132,7 +67,7 @@ def check_attendance():
     india_time = get_india_time()
     print(f"Checking attendance at {india_time.strftime('%Y-%m-%d %H:%M:%S IST')}...")
 
-    courses = get_courses_with_auto_login()
+    courses = fetch_courses()
 
     if os.path.exists(config.STATE_FILE):
         with open(config.STATE_FILE, "r") as f:
@@ -177,7 +112,10 @@ def check_attendance():
 if __name__ == "__main__":
     try:
         check_attendance()
-    except Exception as e:
+    except requests.exceptions.HTTPError as e:
+        status = e.response.status_code if e.response is not None else 0
+        if status == 401:
+            print("ERROR: Token expired! Update CV_AUTH_TOKEN in GitHub Secrets.")
         print(f"Error: {e}")
         error_msg = (
             "**SYSTEM ERROR DETECTED**\n"
@@ -186,10 +124,17 @@ if __name__ == "__main__":
             f"Error Details:\n"
             f"```{str(e)}```\n"
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            "*System will retry in 6 minutes*"
+            "*Update CV_AUTH_TOKEN if token expired*"
         )
         try:
             send_telegram(error_msg)
+        except Exception:
+            pass
+        sys.exit(1)
+    except Exception as e:
+        print(f"Error: {e}")
+        try:
+            send_telegram(f"**ERROR:** `{e}`")
         except Exception:
             pass
         sys.exit(1)

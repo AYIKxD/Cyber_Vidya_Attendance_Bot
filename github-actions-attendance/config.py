@@ -4,16 +4,12 @@ import sys
 # ──────────────────────────────────────────────
 #  API Endpoints
 # ──────────────────────────────────────────────
-LOGIN_PAGE = "https://kiet.cybervidya.net/login"
-LOGIN_API = "https://kiet.cybervidya.net/api/auth/encrypt/login"
 COURSES_URL = "https://kiet.cybervidya.net/api/student/dashboard/registered-courses"
 TELEGRAM_API = "https://api.telegram.org/bot{token}/sendMessage"
 
 # ──────────────────────────────────────────────
-#  CyberVidya Credentials  (GitHub Secrets)
+#  Auth Token  (GitHub Secrets)
 # ──────────────────────────────────────────────
-CV_USERNAME = os.environ.get("CV_USERNAME", "")
-CV_PASSWORD = os.environ.get("CV_PASSWORD", "")
 CV_AUTH_TOKEN = os.environ.get("CV_AUTH_TOKEN", "")
 CV_AUTH_PREF = os.environ.get("CV_AUTH_PREF", "")
 
@@ -33,14 +29,12 @@ REQUEST_TIMEOUT = 30
 
 
 def validate():
-    has_token = bool(CV_AUTH_TOKEN)
-    has_creds = bool(CV_USERNAME and CV_PASSWORD)
-    has_telegram = bool(TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID)
-
-    if not has_token and not has_creds:
-        print("ERROR: No credentials provided.")
-        print("Set CV_USERNAME + CV_PASSWORD as GitHub Secrets.")
+    if not CV_AUTH_TOKEN:
+        print("ERROR: CV_AUTH_TOKEN not set.")
+        print("Go to GitHub repo → Settings → Secrets → Actions")
+        print("Add CV_AUTH_TOKEN (from browser localStorage 'authenticationtoken')")
+        print("Add CV_AUTH_PREF (from browser localStorage 'auth_prefix')")
         sys.exit(1)
 
-    if not has_telegram:
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         print("WARNING: Telegram not configured. Notifications will only print to console.")

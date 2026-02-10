@@ -19,24 +19,19 @@ jobs:
           python-version: "3.12"
 
       - name: Install dependencies
-        run: |
-          pip install -r github-actions-attendance/requirements.txt
-          playwright install chromium --with-deps
+        run: pip install -r github-actions-attendance/requirements.txt
 
       - name: Restore state
         uses: actions/cache@v4
         with:
-          path: |
-            github-actions-attendance/attendance_state.json
-            github-actions-attendance/token.json
+          path: github-actions-attendance/attendance_state.json
           key: attendance-state-${{ github.run_id }}
-          restore-keys: |
-            attendance-state-
+          restore-keys: attendance-state-
 
       - name: Run attendance checker
         env:
-          CV_USERNAME: ${{ secrets.CV_USERNAME }}
-          CV_PASSWORD: ${{ secrets.CV_PASSWORD }}
+          CV_AUTH_TOKEN: ${{ secrets.CV_AUTH_TOKEN }}
+          CV_AUTH_PREF: ${{ secrets.CV_AUTH_PREF }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python github-actions-attendance/attendance.py
