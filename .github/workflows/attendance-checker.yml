@@ -1,0 +1,40 @@
+name: Attendance Checker
+
+on:
+  schedule:
+    - cron: "*/6 * * * *"    # Every 6 minutes, 24/7
+  workflow_dispatch:          # Manual trigger button
+
+jobs:
+  check-attendance:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r github-actions-attendance/requirements.txt
+
+      - name: Restore attendance state
+        uses: actions/cache@v4
+        with:
+          path: github-actions-attendance/attendance_state.json
+          key: attendance-state-${{ github.run_id }}
+          restore-keys: |
+            attendance-state-
+
+      - name: Run attendance checker
+        env:
+          CV_USERNAME: ${{ secrets.CV_USERNAME }}
+          CV_PASSWORD: ${{ secrets.CV_PASSWORD }}
+          CV_AUTH_TOKEN: ${{ secrets.CV_AUTH_TOKEN }}
+          CV_AUTH_PREF: ${{ secrets.CV_AUTH_PREF }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python github-actions-attendance/attendance.py
