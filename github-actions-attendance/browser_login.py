@@ -134,117 +134,144 @@ def browser_login():
         username_filled = False
         password_filled = False
 
-        # Approach 1: Use :visible pseudo-selector (Playwright-specific)
-        print("Approach 1: Looking for visible inputs...")
-        try:
-            visible_text = page.locator(
-                'input[type="text"]:visible, input[type="email"]:visible, '
-                'input[type="tel"]:visible, input[type="number"]:visible'
-            )
-            visible_pass = page.locator('input[type="password"]:visible')
+        # Approach 1: Target by name/formcontrolname with real keystrokes
+        # From debug output: name="username" formControl=username, name="password" formControl=password
+        print("Approach 1: Targeting inputs by name attribute with keyboard typing...")
+        username_selectors = [
+            'input[name="username"]:visible',
+            'input[formcontrolname="username"]:visible',
+            'input[formcontrolname="userName"]:visible',
+            'input[name="userName"]:visible',
+            'input[formcontrolname="rollNo"]:visible',
+        ]
+        password_selectors = [
+            'input[name="password"]:visible',
+            'input[formcontrolname="password"]:visible',
+            'input[type="password"]:visible',
+        ]
 
-            text_count = visible_text.count()
-            pass_count = visible_pass.count()
-            print(f"  Visible text inputs: {text_count}, password inputs: {pass_count}")
+        for selector in username_selectors:
+            el = page.locator(selector)
+            if el.count() > 0:
+                try:
+                    el.first.click(timeout=3000)
+                    time.sleep(0.2)
+                    # Triple-click to select all, then clear
+                    el.first.press("Control+a")
+                    el.first.press("Backspace")
+                    time.sleep(0.1)
+                    # Type character by character — triggers Angular input events properly
+                    el.first.press_sequentially(config.CV_USERNAME, delay=50)
+                    time.sleep(0.3)
+                    # Tab out to trigger blur/validation
+                    el.first.press("Tab")
+                    username_filled = True
+                    print(f"  Username typed via: {selector}")
+                    break
+                except Exception as e:
+                    print(f"  Failed with {selector}: {e}")
 
-            if text_count > 0 and pass_count > 0:
-                visible_text.first.click(timeout=5000)
-                time.sleep(0.3)
-                visible_text.first.fill(config.CV_USERNAME)
-                username_filled = True
-                print("  Username filled via visible text input.")
+        for selector in password_selectors:
+            el = page.locator(selector)
+            if el.count() > 0:
+                try:
+                    el.first.click(timeout=3000)
+                    time.sleep(0.2)
+                    el.first.press("Control+a")
+                    el.first.press("Backspace")
+                    time.sleep(0.1)
+                    el.first.press_sequentially(config.CV_PASSWORD, delay=50)
+                    time.sleep(0.3)
+                    el.first.press("Tab")
+                    password_filled = True
+                    print(f"  Password typed via: {selector}")
+                    break
+                except Exception as e:
+                    print(f"  Failed with {selector}: {e}")
 
-                time.sleep(0.5)
-                visible_pass.first.click(timeout=5000)
-                time.sleep(0.3)
-                visible_pass.first.fill(config.CV_PASSWORD)
-                password_filled = True
-                print("  Password filled via visible password input.")
-        except Exception as e:
-            print(f"  Approach 1 failed: {e}")
-
-        # Approach 2: Target Angular formcontrolname attributes directly
+        # Approach 2: If Approach 1 failed, use JS to set values AND patch Angular form control
         if not username_filled or not password_filled:
-            print("Approach 2: Trying formcontrolname selectors...")
-            if not username_filled:
-                for selector in [
-                    'input[formcontrolname="userName"]',
-                    'input[formcontrolname="username"]',
-                    'input[formcontrolname="rollNo"]',
-                    'input[formcontrolname="userId"]',
-                    'input[formcontrolname="email"]',
-                ]:
-                    el = page.locator(selector)
-                    if el.count() > 0:
-                        # Remove hide-option class and force-fill
-                        el.first.evaluate("el => { el.classList.remove('hide-option'); el.style.display = 'block'; el.style.visibility = 'visible'; }")
-                        time.sleep(0.2)
-                        el.first.fill(config.CV_USERNAME, force=True)
-                        username_filled = True
-                        print(f"  Username filled via {selector}")
-                        break
-
-            if not password_filled:
-                for selector in [
-                    'input[formcontrolname="password"]',
-                    'input[formcontrolname="pwd"]',
-                ]:
-                    el = page.locator(selector)
-                    if el.count() > 0:
-                        el.first.evaluate("el => { el.classList.remove('hide-option'); el.style.display = 'block'; el.style.visibility = 'visible'; }")
-                        time.sleep(0.2)
-                        el.first.fill(config.CV_PASSWORD, force=True)
-                        password_filled = True
-                        print(f"  Password filled via {selector}")
-                        break
-
-        # Approach 3: JavaScript injection into Angular reactive form
-        if not username_filled or not password_filled:
-            print("Approach 3: JavaScript injection into Angular form...")
+            print("Approach 2: Direct Angular form control patching via JS...")
             result = page.evaluate("""(creds) => {
                 let filled = {username: false, password: false};
+
+                // Find the Angular form component and patch its reactive form
+                const appLogin = document.querySelector('app-login');
+                if (appLogin) {
+                    // Try Angular's internal API to get the component instance
+                    const ngContext = appLogin.__ngContext__;
+                    // Also try ng.getComponent
+                    if (typeof ng !== 'undefined' && ng.getComponent) {
+                        try {
+                            const comp = ng.getComponent(appLogin);
+                            if (comp && comp.loginForm) {
+                                comp.loginForm.patchValue({
+                                    username: creds.username,
+                                    password: creds.password
+                                });
+                                comp.loginForm.markAsDirty();
+                                comp.loginForm.markAsTouched();
+                                comp.loginForm.updateValueAndValidity();
+                                filled.username = true;
+                                filled.password = true;
+                                return filled;
+                            }
+                        } catch(e) { console.log('ng.getComponent failed:', e); }
+                    }
+                }
+
+                // Fallback: set values with proper event dispatching
                 const inputs = document.querySelectorAll('input');
-                inputs.forEach(input => {
-                    const fc = (input.getAttribute('formcontrolname') || '').toLowerCase();
-                    const type = input.type;
+                for (const input of inputs) {
                     const name = (input.name || '').toLowerCase();
+                    const fc = (input.getAttribute('formcontrolname') || '').toLowerCase();
 
-                    const isUsername = (
-                        fc.includes('user') || fc.includes('roll') || fc.includes('email') ||
-                        name.includes('user') || name.includes('roll') ||
-                        (type === 'text' && !fc.includes('password'))
-                    );
-                    const isPassword = (
-                        type === 'password' || fc.includes('password') || fc.includes('pwd')
-                    );
-
-                    if (isUsername && !filled.username) {
-                        // Use Angular's NgZone to properly update
-                        const nativeInputValueSetter = Object.getOwnPropertyDescriptor(
-                            window.HTMLInputElement.prototype, 'value'
-                        ).set;
-                        nativeInputValueSetter.call(input, creds.username);
+                    if ((name === 'username' || fc === 'username') && !filled.username) {
+                        const setter = Object.getOwnPropertyDescriptor(
+                            window.HTMLInputElement.prototype, 'value').set;
+                        setter.call(input, creds.username);
                         input.dispatchEvent(new Event('input', {bubbles: true}));
                         input.dispatchEvent(new Event('change', {bubbles: true}));
                         input.dispatchEvent(new Event('blur', {bubbles: true}));
                         filled.username = true;
                     }
-                    if (isPassword && !filled.password) {
-                        const nativeInputValueSetter = Object.getOwnPropertyDescriptor(
-                            window.HTMLInputElement.prototype, 'value'
-                        ).set;
-                        nativeInputValueSetter.call(input, creds.password);
+                    if ((name === 'password' || fc === 'password' || input.type === 'password') && !filled.password) {
+                        const setter = Object.getOwnPropertyDescriptor(
+                            window.HTMLInputElement.prototype, 'value').set;
+                        setter.call(input, creds.password);
                         input.dispatchEvent(new Event('input', {bubbles: true}));
                         input.dispatchEvent(new Event('change', {bubbles: true}));
                         input.dispatchEvent(new Event('blur', {bubbles: true}));
                         filled.password = true;
                     }
-                });
+                }
                 return filled;
             }""", {"username": config.CV_USERNAME, "password": config.CV_PASSWORD})
             username_filled = result.get("username", False)
             password_filled = result.get("password", False)
-            print(f"  JS injection result: username={username_filled}, password={password_filled}")
+            print(f"  JS patching result: username={username_filled}, password={password_filled}")
+
+        # Verify Angular form state after filling
+        form_state = page.evaluate("""() => {
+            const inputs = document.querySelectorAll('input[formcontrolname]');
+            const states = [];
+            for (const inp of inputs) {
+                states.push({
+                    name: inp.getAttribute('formcontrolname'),
+                    value: inp.value ? '(has value)' : '(empty)',
+                    classes: inp.className,
+                    valid: inp.classList.contains('ng-valid'),
+                    dirty: inp.classList.contains('ng-dirty'),
+                });
+            }
+            // Also check if submit button is disabled
+            const btn = document.querySelector('button[type="submit"]');
+            return {
+                inputs: states,
+                submitDisabled: btn ? btn.disabled : 'no button found',
+            };
+        }""")
+        print(f"Form state after filling: {json.dumps(form_state, indent=2)}")
 
         if not username_filled or not password_filled:
             print(f"ERROR: Could not fill credentials (username={username_filled}, password={password_filled})")
@@ -252,7 +279,6 @@ def browser_login():
             browser.close()
             sys.exit(1)
 
-        time.sleep(1)
 
         # ── Wait for reCAPTCHA v3 to load ──
         print("Waiting for reCAPTCHA to initialize...")
