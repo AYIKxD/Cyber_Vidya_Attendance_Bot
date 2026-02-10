@@ -36,29 +36,19 @@ def send_telegram(msg):
 
 def calculate_attendance_message(course, present, total, status):
     percentage = (present / total * 100) if total > 0 else 0
-    status_text = "**PRESENT**" if status == "Present" else "**ABSENT**"
-
-    msg = f"*{course}*\n"
-    msg += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-    msg += f"Status: {status_text}\n"
-    msg += f"Attendance: `{present}/{total}` lectures\n"
-    msg += f"Percentage: *{percentage:.1f}%*\n"
-    msg += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-
     pct = config.MIN_ATTENDANCE_PCT / 100
+
+    icon = "✅" if status == "Present" else "❌" if status == "Absent" else "📝"
+
+    msg = f"{icon} *{course}*\n\n"
+    msg += f"    `{present}/{total}` — *{percentage:.1f}%*\n\n"
 
     if percentage < config.MIN_ATTENDANCE_PCT:
         x = max(0, math.ceil((pct * total - present) / (1 - pct)))
-        msg += "__CRITICAL ALERT__\n"
-        msg += "Below minimum requirement\n"
-        msg += f"*Action Required:* Attend next `{x}` lecture(s)\n"
-        msg += "Missing classes could affect eligibility"
+        msg += f"⚠️ Below {config.MIN_ATTENDANCE_PCT}%. Attend next *{x}* to recover."
     else:
         y = max(0, math.floor(present / pct - total))
-        msg += "__ATTENDANCE SECURE__\n"
-        msg += f"Above {config.MIN_ATTENDANCE_PCT}% requirement\n"
-        msg += f"*Flexibility:* Can skip up to `{y}` lecture(s)\n"
-        msg += "Keep up the excellent work"
+        msg += f"You can skip *{y}* more class(es) safely."
 
     return msg
 
@@ -118,14 +108,14 @@ if __name__ == "__main__":
             print("ERROR: Token expired! Update CV_AUTH_TOKEN in GitHub Secrets.")
         print(f"Error: {e}")
         error_msg = (
-            "**SYSTEM ERROR DETECTED**\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"Time: `{get_india_time().strftime('%d %B %Y, %I:%M %p IST')}`\n"
-            f"Error Details:\n"
-            f"```{str(e)}```\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            "*Update CV_AUTH_TOKEN if token expired*"
+            "🚨 *SYSTEM ERROR*\n\n"
+            f"🕐 `{get_india_time().strftime('%d %b %Y, %I:%M %p IST')}`\n\n"
+            f"```\n{str(e)}\n```\n\n"
         )
+        if status == 401:
+            error_msg += "🔑 _Token expired — update_ `CV_AUTH_TOKEN` _in GitHub Secrets_"
+        else:
+            error_msg += "🔄 _System will retry on next scheduled run_"
         try:
             send_telegram(error_msg)
         except Exception:
@@ -134,7 +124,7 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"Error: {e}")
         try:
-            send_telegram(f"**ERROR:** `{e}`")
+            send_telegram(f"🚨 *ERROR*\n\n```\n{e}\n```")
         except Exception:
             pass
         sys.exit(1)
